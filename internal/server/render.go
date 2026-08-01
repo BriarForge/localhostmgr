@@ -200,8 +200,10 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
       <tr data-name="{{.Name}}">
         <td>
           <div class="name">{{.Name}}</div>
-          <div class="cwd" title="{{.Cwd}}">{{.Cwd}}</div>
-          <div class="cmd" title="{{.Cmd}}">{{.Cmd}}</div>
+          <div class="cwd" title="Cwd: {{.Cwd}}">{{.Cwd}}</div>
+          <div class="cmd" title="Cmd: {{.Cmd}}">{{.Cmd}}</div>
+          {{if .BuildCmd}}<div class="cmd build" title="Build: {{.BuildCmd}}">{{.BuildCmd}}</div>{{end}}
+          {{if .StartCmd}}<div class="cmd muted" title="Start: {{.StartCmd}}">{{.StartCmd}}</div>{{end}}
         </td>
         <td>
           {{if eq .State "running"}}<span class="state-badge state-running">&#9679; running</span>
@@ -232,6 +234,8 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
             {{else}}
               <button class="btn btn-sm btn-green" onclick="doAction('start','{{.Name}}',this)">Start</button>
             {{end}}
+            {{if .BuildCmd}}<button class="btn btn-sm" onclick="doAction('rebuild','{{.Name}}',this)">Rebuild</button>{{end}}
+            <button class="btn btn-sm" onclick="editService('{{.Name}}')">Edit</button>
             {{if .Enabled}}
               <button class="btn btn-sm btn-yellow" onclick="doAction('disable','{{.Name}}',this)">Disable</button>
             {{else}}
@@ -260,6 +264,48 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
   </div>
   <pre class="log-box" id="logBox"></pre>
 </div>
+
+<!-- Edit modal -->
+<div id="editModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:200;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;width:520px;max-width:95vw;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h3 style="font-size:16px;font-weight:700;">Edit Service</h3>
+      <button class="btn btn-sm" onclick="closeEdit()">Close</button>
+    </div>
+    <input type="hidden" id="editName"/>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div>
+        <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Cwd</label>
+        <input id="editCwd" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Port</label>
+        <input id="editPort" type="number" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+      </div>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Cmd (default start command)</label>
+      <input id="editCmd" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div>
+        <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Build Cmd</label>
+        <input id="editBuildCmd" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Start Cmd</label>
+        <input id="editStartCmd" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+      </div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:4px;">Health URL</label>
+      <input id="editHealthURL" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;font-family:var(--font);"/>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -274,6 +320,7 @@ async function doAction(action, name, btn) {
   case 'start':    method = 'POST'; path = '/api/services/' + name + '/start'; break;
   case 'stop':     method = 'POST'; path = '/api/services/' + name + '/stop'; break;
   case 'restart':  method = 'POST'; path = '/api/services/' + name + '/restart'; break;
+  case 'rebuild':  method = 'POST'; path = '/api/services/' + name + '/rebuild'; break;
   case 'enable':   method = 'POST'; path = '/api/services/' + name + '/enable'; break;
   case 'disable':  method = 'POST'; path = '/api/services/' + name + '/disable'; break;
   case 'remove':   method = 'DELETE'; path = '/api/services/' + name; break;
@@ -313,6 +360,43 @@ function toast(msg, cls) {
   t.className = 'toast show ' + (cls || '');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.className = 'toast', 2500);
+}
+
+async function editService(name) {
+  const r = await fetch('/api/services/' + name);
+  const svc = await r.json();
+  document.getElementById('editName').value = svc.name;
+  document.getElementById('editCwd').value = svc.cwd || '';
+  document.getElementById('editPort').value = svc.port || '';
+  document.getElementById('editCmd').value = svc.cmd || '';
+  document.getElementById('editBuildCmd').value = svc.build_cmd || '';
+  document.getElementById('editStartCmd').value = svc.start_cmd || '';
+  document.getElementById('editHealthURL').value = svc.health_url || '';
+  document.getElementById('editModal').style.display = 'flex';
+}
+
+async function saveEdit() {
+  const name = document.getElementById('editName').value;
+  const body = {
+    cwd: document.getElementById('editCwd').value,
+    port: parseInt(document.getElementById('editPort').value) || 0,
+    cmd: document.getElementById('editCmd').value,
+    build_cmd: document.getElementById('editBuildCmd').value,
+    start_cmd: document.getElementById('editStartCmd').value,
+    health_url: document.getElementById('editHealthURL').value,
+  };
+  const r = await fetch('/api/services/' + name, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if (j.error) { toast(j.error, 'error'); }
+  else { toast('saved', 'success'); closeEdit(); setTimeout(() => location.reload(), 600); }
+}
+
+function closeEdit() {
+  document.getElementById('editModal').style.display = 'none';
 }
 </script>
 </body>

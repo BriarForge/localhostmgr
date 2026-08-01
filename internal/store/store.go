@@ -27,6 +27,8 @@ type Service struct {
 	LastHealthAt sql.NullString
 	LastError    sql.NullString
 	FailCount    int
+	BuildCmd     string
+	StartCmd     string
 }
 
 type Store struct {
@@ -65,10 +67,18 @@ CREATE TABLE IF NOT EXISTS services (
   last_start_at TEXT,
   last_health_at TEXT,
   last_error TEXT,
-  fail_count INTEGER NOT NULL DEFAULT 0
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  build_cmd TEXT DEFAULT '',
+  start_cmd TEXT DEFAULT ''
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// Backfill new columns on existing schema (no-op if already present).
+	_, _ = s.db.Exec(`ALTER TABLE services ADD COLUMN build_cmd TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE services ADD COLUMN start_cmd TEXT DEFAULT ''`)
+	return nil
 }
 
 func (s *Store) Add(svc Service) error {
@@ -86,15 +96,17 @@ func (s *Store) Add(svc Service) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-INSERT INTO services (name, cwd, cmd, port, health_url, env_json, enabled)
-VALUES (?,?,?,?,?,?,?)
+INSERT INTO services (name, cwd, cmd, port, health_url, env_json, enabled, build_cmd, start_cmd)
+VALUES (?,?,?,?,?,?,?,?,?)
 ON CONFLICT(name) DO UPDATE SET
   cwd=excluded.cwd,
   cmd=excluded.cmd,
   port=excluded.port,
   health_url=excluded.health_url,
-  env_json=excluded.env_json
-`, svc.Name, svc.Cwd, svc.Cmd, nullableInt(svc.Port), svc.HealthURL, envJSON, boolToInt(svc.Enabled))
+  env_json=excluded.env_json,
+  build_cmd=excluded.build_cmd,
+  start_cmd=excluded.start_cmd
+`, svc.Name, svc.Cwd, svc.Cmd, nullableInt(svc.Port), svc.HealthURL, envJSON, boolToInt(svc.Enabled), svc.BuildCmd, svc.StartCmd)
 	return err
 }
 
@@ -108,7 +120,7 @@ func (s *Store) Delete(name string) error {
 func (s *Store) List() ([]Service, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT name, cwd, cmd, port, health_url, env_json, enabled, pid, last_start_at, last_health_at, last_error, fail_count FROM services ORDER BY name`)
+	rows, err := s.db.Query(`SELECT name, cwd, cmd, port, health_url, env_json, enabled, pid, last_start_at, last_health_at, last_error, fail_count, build_cmd, start_cmd FROM services ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +139,39 @@ func (s *Store) List() ([]Service, error) {
 func (s *Store) Get(name string) (Service, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row := s.db.QueryRow(`SELECT name, cwd, cmd, port, health_url, env_json, enabled, pid, last_start_at, last_health_at, last_error, fail_count FROM services WHERE name=?`, name)
+	row := s.db.QueryRow(`SELECT name, cwd, cmd, port, health_url, env_json, enabled, pid, last_start_at, last_health_at, last_error, fail_count, build_cmd, start_cmd FROM services WHERE name=?`, name)
 	return scanService(row)
+}
+
+// Update applies a partial update to an existing service record.
+// Only non-zero/non-empty fields are updated; zero-value fields are skipped.
+func (s *Store) Update(name string, patch Service) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Build dynamic UPDATE based on which fields are set.
+	if patch.Cwd != "" {
+		_, _ = s.db.Exec(`UPDATE services SET cwd=? WHERE name=?`, patch.Cwd, name)
+	}
+	if patch.Cmd != "" {
+		_, _ = s.db.Exec(`UPDATE services SET cmd=? WHERE name=?`, patch.Cmd, name)
+	}
+	if patch.Port != 0 {
+		_, _ = s.db.Exec(`UPDATE services SET port=? WHERE name=?`, patch.Port, name)
+	}
+	if patch.HealthURL != "" {
+		_, _ = s.db.Exec(`UPDATE services SET health_url=? WHERE name=?`, patch.HealthURL, name)
+	}
+	if patch.BuildCmd != "" {
+		_, _ = s.db.Exec(`UPDATE services SET build_cmd=? WHERE name=?`, patch.BuildCmd, name)
+	}
+	if patch.StartCmd != "" {
+		_, _ = s.db.Exec(`UPDATE services SET start_cmd=? WHERE name=?`, patch.StartCmd, name)
+	}
+	if len(patch.Env) > 0 {
+		b, _ := json.Marshal(patch.Env)
+		_, _ = s.db.Exec(`UPDATE services SET env_json=? WHERE name=?`, string(b), name)
+	}
+	return nil
 }
 
 func (s *Store) SetEnabled(name string, enabled bool) error {
@@ -208,7 +251,8 @@ func scanService(row interface {
 	var port sql.NullInt64
 	var enabled int
 	if err := row.Scan(&svc.Name, &svc.Cwd, &svc.Cmd, &port, &svc.HealthURL, &envJSON, &enabled,
-		&svc.PID, &svc.LastStartAt, &svc.LastHealthAt, &svc.LastError, &svc.FailCount); err != nil {
+		&svc.PID, &svc.LastStartAt, &svc.LastHealthAt, &svc.LastError, &svc.FailCount,
+		&svc.BuildCmd, &svc.StartCmd); err != nil {
 		return Service{}, err
 	}
 	if port.Valid {

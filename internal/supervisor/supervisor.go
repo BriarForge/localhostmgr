@@ -144,6 +144,7 @@ func (s *Supervisor) Restart(name string) error {
 }
 
 // Start spawns the service's shell command and records the PID in the store.
+// If BuildCmd is set on the service it is run first in the same Cwd.
 func (s *Supervisor) Start(svc store.Service) error {
 	if svc.Cwd == "" {
 		return errors.New("cwd is empty")
@@ -151,6 +152,20 @@ func (s *Supervisor) Start(svc store.Service) error {
 	if _, err := os.Stat(svc.Cwd); err != nil {
 		return fmt.Errorf("cwd %q not accessible: %w", svc.Cwd, err)
 	}
+
+	// Run build step first if defined.
+	if svc.BuildCmd != "" {
+		if err := s.runBuild(svc); err != nil {
+			return fmt.Errorf("build: %w", err)
+		}
+	}
+
+	// Determine the start command.
+	startCmd := svc.StartCmd
+	if startCmd == "" {
+		startCmd = svc.Cmd
+	}
+
 	// Port conflict: refuse to start if another service owns this port.
 	if svc.Port > 0 {
 		if existing, ok := portOwnerPID(svc.Port); ok && existing != pidOf(svc) {
@@ -166,7 +181,7 @@ func (s *Supervisor) Start(svc store.Service) error {
 	}
 	defer lf.Close()
 
-	cmd := exec.Command("sh", "-c", svc.Cmd)
+	cmd := exec.Command("sh", "-c", startCmd)
 	cmd.Dir = svc.Cwd
 	cmd.Stdout = lf
 	cmd.Stderr = lf
@@ -178,11 +193,10 @@ func (s *Supervisor) Start(svc store.Service) error {
 	}
 	pid := cmd.Process.Pid
 	if err := s.st.UpdatePID(svc.Name, pid); err != nil {
-		// DB error after spawn — kill the orphan so we don't leak
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("record pid: %w", err)
 	}
-	s.logf("supervisor[%s]: started pid=%d cmd=%q cwd=%s", svc.Name, pid, svc.Cmd, svc.Cwd)
+	s.logf("supervisor[%s]: started pid=%d cmd=%q cwd=%s", svc.Name, pid, startCmd, svc.Cwd)
 
 	// Reap in background; on early death count a failure so backoff kicks in next tick.
 	go func(name string, c *exec.Cmd, svc store.Service) {
@@ -192,12 +206,44 @@ func (s *Supervisor) Start(svc store.Service) error {
 			s.logf("supervisor[%s]: child exited: %v", name, err)
 			_ = s.st.RecordFailure(name, err.Error())
 		} else if c.ProcessState != nil && !c.ProcessState.Success() {
-			// Process exited with non-zero status — almost always a startup error
-			// (e.g. "node: command not found"). Backoff is required to prevent thrash.
 			s.logf("supervisor[%s]: child exited with non-zero status (%s)", name, c.ProcessState.String())
 			_ = s.st.RecordFailure(name, c.ProcessState.String())
 		}
 	}(svc.Name, cmd, svc)
+	return nil
+}
+
+// Rebuild runs the service's BuildCmd in its Cwd and returns an error if it fails.
+// It does NOT start or restart the service — use Restart() for that.
+func (s *Supervisor) Rebuild(svc store.Service) error {
+	if svc.BuildCmd == "" {
+		return errors.New("build_cmd is not set")
+	}
+	return s.runBuild(svc)
+}
+
+func (s *Supervisor) runBuild(svc store.Service) error {
+	logDir, _ := defaultLogDir()
+	_ = os.MkdirAll(logDir, 0o755)
+	logPath := fmt.Sprintf("%s/%s.build.log", logDir, svc.Name)
+	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open build log: %w", err)
+	}
+	defer lf.Close()
+
+	s.logf("supervisor[%s]: running build: %s", svc.Name, svc.BuildCmd)
+	cmd := exec.Command("sh", "-c", svc.BuildCmd)
+	cmd.Dir = svc.Cwd
+	cmd.Stdout = lf
+	cmd.Stderr = lf
+	cmd.Env = buildEnv(svc)
+
+	if err := cmd.Run(); err != nil {
+		s.logf("supervisor[%s]: build failed: %v", svc.Name, err)
+		return fmt.Errorf("build cmd failed: %w", err)
+	}
+	s.logf("supervisor[%s]: build succeeded", svc.Name)
 	return nil
 }
 

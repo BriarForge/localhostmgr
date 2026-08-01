@@ -1,5 +1,5 @@
 // localhostmgr — single-binary localhost process supervisor.
-// Subcommands: serve | add | list | status | start | stop | restart | enable | disable | remove | doctor | install-launchd | uninstall-launchd
+// Subcommands: serve | add | list | status | start | stop | restart | rebuild | update | enable | disable | remove | doctor | install-launchd | uninstall-launchd
 package main
 
 import (
@@ -31,14 +31,16 @@ const usage = `localhostmgr — supervise localhost services.
 
 Usage:
   localhostmgr serve
-  localhostmgr add --name <id> --cwd <path> --cmd "<sh -c string>" [--port N] [--health URL] [--env KEY=VAL ...] [--disable]
+  localhostmgr add --name <id> --cwd <path> --cmd "<sh -c string>" [--port N] [--health URL] [--env KEY=VAL ...] [--build-cmd CMD] [--start-cmd CMD] [--disable]
   localhostmgr list
   localhostmgr status [name]
   localhostmgr start <name>        # spawn now, record pid
   localhostmgr stop <name>         # kill tracked pid (if alive)
   localhostmgr restart <name>      # stop then start
+  localhostmgr rebuild <name>      # run build command without restarting
   localhostmgr enable <name>
   localhostmgr disable <name>
+  localhostmgr update <name>       # update fields then restart if running
   localhostmgr remove <name>
   localhostmgr doctor
   localhostmgr install-launchd    # writes com.briarforge.localhostmgr.plist and load -w
@@ -77,6 +79,12 @@ func main() {
 	case "restart":
 		requireName(args, "restart")
 		runRestart(st, args[0])
+	case "rebuild":
+		requireName(args, "rebuild")
+		runRebuild(st, args[0])
+	case "update":
+		requireName(args, "update")
+		runUpdate(st, args[0], args[1:])
 	case "enable":
 		requireName(args, "enable")
 		runEnable(st, args[0], true)
@@ -185,6 +193,8 @@ func runAdd(st *store.Store, args []string) {
 	cmdStr := fs.String("cmd", "", "shell command (required)")
 	port := fs.Int("port", 0, "listening port (optional)")
 	health := fs.String("health", "", "health probe URL (optional)")
+	buildCmd := fs.String("build-cmd", "", "build command (run before start; e.g. 'npm run build')")
+	startCmd := fs.String("start-cmd", "", "start command (overrides cmd; e.g. 'npm start')")
 	disable := fs.Bool("disable", false, "register but leave disabled")
 	var envFlags multiFlag
 	fs.Var(&envFlags, "env", "KEY=VAL pair (repeatable)")
@@ -216,10 +226,16 @@ func runAdd(st *store.Store, args []string) {
 		HealthURL: *health,
 		Env:       envMap,
 		Enabled:   !*disable,
+		BuildCmd:  *buildCmd,
+		StartCmd:  *startCmd,
 	}); err != nil {
 		fatal("add: %v", err)
 	}
-	fmt.Printf("added %s (cwd=%s cmd=%q)\n", *name, *cwd, *cmdStr)
+	if *buildCmd != "" {
+		fmt.Printf("added %s (cwd=%s cmd=%q build=%q start=%q)\n", *name, *cwd, *cmdStr, *buildCmd, *startCmd)
+	} else {
+		fmt.Printf("added %s (cwd=%s cmd=%q)\n", *name, *cwd, *cmdStr)
+	}
 }
 
 func runList(st *store.Store) {
@@ -543,3 +559,65 @@ func pidOnPort(port int) (int, bool) {
 
 // lsofReachable is unused but kept to expose that we depend on lsof.
 var _ = net.IPv4
+
+// --- new commands -----------------------------------------------------------
+
+func runRebuild(st *store.Store, name string) {
+	sv, err := st.Get(name)
+	if err != nil {
+		fatal("get: %v", err)
+	}
+	if sv.BuildCmd == "" {
+		fatal("no build_cmd set for %q — set one with: localhostmgr update --build-cmd 'npm run build' %s", name, name)
+	}
+	s := supervisor.New(st, func(string, ...interface{}) {})
+	if err := s.Rebuild(sv); err != nil {
+		fatal("rebuild failed: %v", err)
+	}
+	fmt.Printf("rebuilt %s (build_cmd=%q)\n", name, sv.BuildCmd)
+}
+
+func runUpdate(st *store.Store, name string, args []string) {
+	// Fetch current record so we can overlay flags.
+	current, err := st.Get(name)
+	if err != nil {
+		fatal("get: %v", err)
+	}
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	cwd := fs.String("cwd", current.Cwd, "working directory")
+	cmd := fs.String("cmd", current.Cmd, "shell command")
+	port := fs.Int("port", current.Port, "listening port")
+	health := fs.String("health", current.HealthURL, "health probe URL")
+	buildCmd := fs.String("build-cmd", current.BuildCmd, "build command (run before start)")
+	startCmd := fs.String("start-cmd", current.StartCmd, "start command (overrides cmd)")
+	disable := fs.Bool("disable", false, "disable the service")
+	enable := fs.Bool("enable", false, "enable the service")
+	if err := fs.Parse(args); err != nil {
+		fatal("%v", err)
+	}
+	patch := store.Service{
+		Cwd:       *cwd,
+		Cmd:       *cmd,
+		Port:      *port,
+		HealthURL: *health,
+		BuildCmd:  *buildCmd,
+		StartCmd:  *startCmd,
+	}
+	if err := st.Update(name, patch); err != nil {
+		fatal("update: %v", err)
+	}
+	// Handle enable/disable.
+	switch {
+	case *enable:
+		if err := st.SetEnabled(name, true); err != nil {
+			fatal("enable: %v", err)
+		}
+		fmt.Printf("enabled %s\n", name)
+	case *disable:
+		if err := st.SetEnabled(name, false); err != nil {
+			fatal("disable: %v", err)
+		}
+		fmt.Printf("disabled %s\n", name)
+	}
+	fmt.Printf("updated %s\n", name)
+}

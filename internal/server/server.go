@@ -20,12 +20,13 @@ type DaemonInfo struct {
 	Version    string
 }
 
-// serviceController abstracts the supervisor's Start/Stop/Restart so the
+// serviceController abstracts the supervisor's Start/Stop/Restart/Rebuild so the
 // server package doesn't import supervisor (which has tick-loop side-effects).
 type serviceController interface {
 	Start(svc store.Service) error
 	Stop(name string) error
 	Restart(name string) error
+	Rebuild(svc store.Service) error
 }
 
 // Server is the portal HTTP server.
@@ -51,9 +52,12 @@ func (s *Server) Serve() error {
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /api/daemon", s.handleDaemon)
 	mux.HandleFunc("GET /api/services", s.handleList)
+	mux.HandleFunc("GET /api/services/{name}", s.handleGet)
+	mux.HandleFunc("PATCH /api/services/{name}", s.handlePatch)
 	mux.HandleFunc("POST /api/services/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /api/services/{name}/stop", s.handleStop)
 	mux.HandleFunc("POST /api/services/{name}/restart", s.handleRestart)
+	mux.HandleFunc("POST /api/services/{name}/rebuild", s.handleRebuild)
 	mux.HandleFunc("POST /api/services/{name}/enable", s.handleEnable)
 	mux.HandleFunc("POST /api/services/{name}/disable", s.handleDisable)
 	mux.HandleFunc("DELETE /api/services/{name}", s.handleRemove)
@@ -147,6 +151,71 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "restarted"}, nil)
 }
 
+func (s *Server) handleRebuild(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	svc, err := s.st.Get(name)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	if err := s.svcCtrl.Rebuild(svc); err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "rebuilt"}, nil)
+}
+
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	svc, err := s.st.Get(name)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, toJSON(svc), nil)
+}
+
+func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type must be application/json", 400)
+		return
+	}
+	var patch struct {
+		Cwd       string            `json:"cwd"`
+		Cmd       string            `json:"cmd"`
+		Port      int               `json:"port"`
+		HealthURL string            `json:"health_url"`
+		BuildCmd  string            `json:"build_cmd"`
+		StartCmd  string            `json:"start_cmd"`
+		Env       map[string]string `json:"env"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	svc := store.Service{
+		Cwd:       patch.Cwd,
+		Cmd:       patch.Cmd,
+		Port:      patch.Port,
+		HealthURL: patch.HealthURL,
+		BuildCmd:  patch.BuildCmd,
+		StartCmd:  patch.StartCmd,
+		Env:       patch.Env,
+	}
+	if err := s.st.Update(name, svc); err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	// Return the updated record.
+	updated, err := s.st.Get(name)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	writeJSON(w, toJSON(updated), nil)
+}
+
 func (s *Server) handleEnable(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.st.SetEnabled(name, true); err != nil {
@@ -203,6 +272,8 @@ type svcJSON struct {
 	LastStartAt  string `json:"last_start_at"`
 	LastHealthAt string `json:"last_health_at"`
 	State        string `json:"state"`
+	BuildCmd     string `json:"build_cmd"`
+	StartCmd     string `json:"start_cmd"`
 }
 
 func toJSON(svc store.Service) svcJSON {
@@ -243,6 +314,8 @@ func toJSON(svc store.Service) svcJSON {
 		LastStartAt:  lastStart,
 		LastHealthAt: lastHealth,
 		State:        state,
+		BuildCmd:     svc.BuildCmd,
+		StartCmd:     svc.StartCmd,
 	}
 }
 
