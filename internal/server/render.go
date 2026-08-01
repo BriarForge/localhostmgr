@@ -63,7 +63,7 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
     .btn-yellow { background: #422006; border-color: var(--yellow); color: var(--yellow); }
     .btn-yellow:hover { background: #713f12; }
 
-    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    main { max-width: none; margin: 0; padding: 20px 24px; width: 100%; box-sizing: border-box; }
 
     .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
     .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
@@ -86,14 +86,15 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
     .state-disabled { background: #1f1f2e; color: var(--muted); border: 1px dashed var(--border); }
 
     .name { font-weight: 600; font-size: 15px; }
-    .cmd { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cwd { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cmd { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cwd { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cmd.build { color: #4ade80; }
     .pid { font-family: ui-monospace, monospace; color: var(--blue); font-size: 13px; }
     .port { font-family: ui-monospace, monospace; color: var(--muted); }
-    .health { font-size: 11px; color: var(--blue); font-family: ui-monospace, monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .health { font-size: 11px; color: var(--blue); font-family: ui-monospace, monospace; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .fail-badge { background: #450a0a; color: var(--red); border-radius: 4px; padding: 1px 6px; font-size: 11px; font-weight: 700; }
     .last-ok { font-size: 11px; color: var(--muted); }
-    .last-error { font-size: 11px; color: var(--red); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .last-error { font-size: 11px; color: var(--red); max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 

@@ -531,7 +531,10 @@ func processAlive(pid int) bool {
 	if err := p.Signal(syscall.Signal(0)); err == nil {
 		return true
 	}
-	return strings.Contains(err.Error(), "operation not permitted")
+	if strings.Contains(err.Error(), "operation not permitted") {
+		return true
+	}
+	return false
 }
 
 // pidOnPort returns the pid bound to a TCP port, if any.
