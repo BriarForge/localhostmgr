@@ -2,6 +2,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,7 +12,15 @@ import (
 	"localhostmgr/internal/store"
 )
 
-// Server is the portal HTTP server.
+// DaemonInfo holds the supervisor's own runtime metadata, shown in the portal header.
+type DaemonInfo struct {
+	PID        int
+	StartedAt  time.Time
+	PortalPort int
+	Version    string
+}
+
+// serviceController abstracts the supervisor's Start/Stop/Restart so the
 // server package doesn't import supervisor (which has tick-loop side-effects).
 type serviceController interface {
 	Start(svc store.Service) error
@@ -21,25 +30,26 @@ type serviceController interface {
 
 // Server is the portal HTTP server.
 type Server struct {
-	st      *store.Store
-	port    int
-	logf    func(string, ...interface{})
-	svcCtrl serviceController
-	httpSrv *http.Server
+	st       *store.Store
+	info     DaemonInfo
+	logf     func(string, ...interface{})
+	svcCtrl  serviceController
+	httpSrv  *http.Server
 }
 
 // New builds a Server ready to serve on the given port.
-func New(st *store.Store, port int, logf func(string, ...interface{}), ctrl serviceController) *Server {
+func New(st *store.Store, info DaemonInfo, logf func(string, ...interface{}), ctrl serviceController) *Server {
 	if logf == nil {
 		logf = func(string, ...interface{}) {}
 	}
-	return &Server{st: st, port: port, logf: logf, svcCtrl: ctrl}
+	return &Server{st: st, info: info, logf: logf, svcCtrl: ctrl}
 }
 
 // Serve starts the portal HTTP server and blocks.
 func (s *Server) Serve() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleIndex)
+	mux.HandleFunc("GET /api/daemon", s.handleDaemon)
 	mux.HandleFunc("GET /api/services", s.handleList)
 	mux.HandleFunc("POST /api/services/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /api/services/{name}/stop", s.handleStop)
@@ -49,16 +59,13 @@ func (s *Server) Serve() error {
 	mux.HandleFunc("DELETE /api/services/{name}", s.handleRemove)
 	mux.HandleFunc("GET /api/logs/{name}", s.handleLog)
 
-	// No static asset serving needed — favicon is handled inline or skipped.
-	// (Favicon is purely decorative; the page is fully functional without it.)
-
 	s.httpSrv = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.port),
+		Addr:         fmt.Sprintf(":%d", s.info.PortalPort),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	s.logf("portal: listening on http://localhost:%d", s.port)
+	s.logf("portal: listening on http://localhost:%d", s.info.PortalPort)
 	return s.httpSrv.ListenAndServe()
 }
 
@@ -79,7 +86,20 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statuses := s.collectStatuses(svcs)
-	Render(w, statuses)
+	Render(w, s.info, statuses)
+}
+
+func (s *Server) handleDaemon(w http.ResponseWriter, r *http.Request) {
+	uptime := time.Since(s.info.StartedAt).Round(time.Second).String()
+	out := map[string]interface{}{
+		"pid":        s.info.PID,
+		"uptime":     uptime,
+		"started_at":  s.info.StartedAt.Format(time.RFC3339),
+		"portal_url": fmt.Sprintf("http://localhost:%d", s.info.PortalPort),
+		"version":    s.info.Version,
+		"tick_period": "5s",
+	}
+	writeJSON(w, out, nil)
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -240,26 +260,11 @@ func writeJSON(w http.ResponseWriter, v interface{}, err error) {
 		fmt.Fprintf(w, `{"error":%q}`, err.Error())
 		return
 	}
-	if m, ok := v.(map[string]string); ok {
-		fmt.Fprintf(w, `{"status":%q}`, m["status"])
-		return
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "")
+	if err := enc.Encode(v); err != nil {
+		http.Error(w, err.Error(), 500)
 	}
-	js, ok := v.([]svcJSON)
-	if !ok {
-		return
-	}
-	fmt.Fprint(w, "[")
-	for i, svc := range js {
-		if i > 0 {
-			fmt.Fprint(w, ",")
-		}
-		fmt.Fprintf(w, `{"name":%q,"cmd":%q,"cwd":%q,"port":%d,"health_url":%q,"enabled":%t,"pid":%d,"fail_count":%d,"last_error":%q,"last_start_at":%q,"last_health_at":%q,"state":%q}`,
-			svc.Name, svc.Cmd, svc.Cwd, svc.Port, svc.HealthURL, svc.Enabled,
-			svc.PID, svc.FailCount,
-			svc.LastError, svc.LastStartAt, svc.LastHealthAt,
-			svc.State)
-	}
-	fmt.Fprint(w, "]")
 }
 
 func defaultLogDir() (string, error) {

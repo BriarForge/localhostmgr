@@ -6,9 +6,10 @@ import (
 	"time"
 )
 // Render writes the portal HTML page.
-func Render(w http.ResponseWriter, svcs []svcJSON) {
+func Render(w http.ResponseWriter, info DaemonInfo, svcs []svcJSON) {
 	page := pageData{
 		GeneratedAt: time.Now().Format("15:04:05"),
+		Daemon:     info,
 		Services:   svcs,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -19,6 +20,7 @@ func Render(w http.ResponseWriter, svcs []svcJSON) {
 
 type pageData struct {
 	GeneratedAt string
+	Daemon      DaemonInfo
 	Services    []svcJSON
 }
 
@@ -112,6 +114,14 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
     .toast.show { opacity: 1; }
     .toast.error { border-color: var(--red); color: var(--red); }
     .toast.success { border-color: var(--green); color: var(--green); }
+
+    .daemon-bar { background: var(--surface2); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; font-size: 12px; }
+    .daemon-bar .d-item { display: flex; align-items: center; gap: 6px; }
+    .daemon-bar .d-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
+    .daemon-bar .d-value { font-family: ui-monospace, monospace; color: var(--blue); font-weight: 600; }
+    .daemon-bar .d-value.green { color: var(--green); }
+    .daemon-bar .d-value.muted { color: var(--muted); }
+    .daemon-bar .d-divider { width: 1px; height: 16px; background: var(--border); }
   </style>
 </head>
 <body>
@@ -129,6 +139,33 @@ var tmpl = template.Must(template.New("portal").Parse(`<!DOCTYPE html>
     <button class="btn" onclick="location.reload()">Refresh</button>
   </div>
 </header>
+
+<div class="daemon-bar">
+  <div class="d-item">
+    <span class="d-label">PID</span>
+    <span class="d-value">{{.Daemon.PID}}</span>
+  </div>
+  <div class="d-divider"></div>
+  <div class="d-item">
+    <span class="d-label">started</span>
+    <span class="d-value">{{.Daemon.StartedAt}}</span>
+  </div>
+  <div class="d-divider"></div>
+  <div class="d-item">
+    <span class="d-label">tick</span>
+    <span class="d-value muted">5s</span>
+  </div>
+  <div class="d-divider"></div>
+  <div class="d-item">
+    <span class="d-label">portal</span>
+    <span class="d-value">localhost:{{.Daemon.PortalPort}}</span>
+  </div>
+  <div class="d-divider"></div>
+  <div class="d-item">
+    <span class="d-label">go</span>
+    <span class="d-value muted">{{.Daemon.Version}}</span>
+  </div>
+</div>
 
 <main>
 {{if .Services}}

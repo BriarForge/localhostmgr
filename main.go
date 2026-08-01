@@ -158,7 +158,13 @@ func runServe(st *store.Store) {
 
 	// Build a supervisor and start the portal alongside it.
 	s := supervisor.New(st, logf)
-	srv := server.New(st, portalPortDefault, logf, s)
+	daemonInfo := server.DaemonInfo{
+		PID:       os.Getpid(),
+		StartedAt:  time.Now(),
+		PortalPort: portalPortDefault,
+		Version:    runtime.Version(),
+	}
+	srv := server.New(st, daemonInfo, logf, s)
 
 	// Start portal in background goroutine so supervisor loop can run concurrently.
 	go func() {
