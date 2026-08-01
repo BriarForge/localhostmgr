@@ -18,8 +18,13 @@ import (
 	"time"
 
 	"localhostmgr/internal/launchd"
+	"localhostmgr/internal/server"
 	"localhostmgr/internal/store"
 	"localhostmgr/internal/supervisor"
+)
+
+const (
+	portalPortDefault = 19999
 )
 
 const usage = `localhostmgr — supervise localhost services.
@@ -150,7 +155,18 @@ func runServe(st *store.Store) {
 			}
 		}
 	}
+
+	// Build a supervisor and start the portal alongside it.
 	s := supervisor.New(st, logf)
+	srv := server.New(st, portalPortDefault, logf, s)
+
+	// Start portal in background goroutine so supervisor loop can run concurrently.
+	go func() {
+		if err := srv.Serve(); err != nil {
+			logf("portal: server error: %v", err)
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.Run(ctx)

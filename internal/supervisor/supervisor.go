@@ -116,6 +116,33 @@ func (s *Supervisor) checkOne(svc store.Service) {
 	}
 }
 
+// Stop sends SIGTERM to the service's tracked PID and clears it from the store.
+func (s *Supervisor) Stop(name string) error {
+	svc, err := s.st.Get(name)
+	if err != nil {
+		return err
+	}
+	pid := pidOf(svc)
+	if pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+	_ = s.st.ClearPID(name)
+	s.logf("supervisor[%s]: stopped", name)
+	return nil
+}
+
+// Restart stops and immediately starts the service.
+func (s *Supervisor) Restart(name string) error {
+	svc, err := s.st.Get(name)
+	if err != nil {
+		return err
+	}
+	// Stop first (ignore errors — may already be dead).
+	s.Stop(name)
+	time.Sleep(500 * time.Millisecond)
+	return s.Start(svc)
+}
+
 // Start spawns the service's shell command and records the PID in the store.
 func (s *Supervisor) Start(svc store.Service) error {
 	if svc.Cwd == "" {
